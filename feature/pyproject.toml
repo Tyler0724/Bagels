@@ -11,4 +11,5 @@ dependencies = [
     "syrupy>=4.6.1",
     "time-machine>=2.16.0",
     "textual-dev==1.6.1",
+    "pytest-mock>=3.14.0",
 ]
