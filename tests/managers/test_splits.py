@@ -66,101 +66,139 @@ def split_env() -> Dict[str, int]:
     splits.Session = original_session_factory
 
 
-def _create_split(record_id: int, person_id: int, account_id: int, amount=50.0):
-    return splits.create_split(
-        {
-            "recordId": record_id,
-            "personId": person_id,
-            "accountId": account_id,
-            "amount": amount,
-            "isPaid": False,
-            "paidDate": None,
-        }
+def _create_split(record_id: int, person_id: int, account_id: int, **overrides):
+    payload = {
+        "recordId": record_id,
+        "personId": person_id,
+        "accountId": account_id,
+        "amount": 50.0,
+        "isPaid": False,
+        "paidDate": None,
+    }
+    payload.update(overrides)
+    return splits.create_split(payload)
+
+
+class TestSplitManager:
+    @pytest.mark.parametrize(
+        ("amount", "is_paid"),
+        [
+            (45.5, False),
+            (10.0, True),
+            (99.9, False),
+        ],
     )
-
-
-def test_create_split_persists_new_entry(split_env):
-    new_split = _create_split(
-        split_env["record_id"],
-        split_env["person_id"],
-        split_env["account_id"],
-        amount=45.5,
-    )
-
-    assert new_split.id is not None
-    assert new_split.amount == 45.5
-
-    with splits.Session() as session:
-        stored = session.get(Split, new_split.id)
-        assert stored is not None
-        assert stored.personId == split_env["person_id"]
-
-
-def test_get_splits_by_record_id_returns_all_matches(split_env):
-    _create_split(split_env["record_id"], split_env["person_id"], split_env["account_id"])
-    _create_split(
-        split_env["record_id"],
-        split_env["person_id"],
-        split_env["account_id"],
-        amount=30.0,
-    )
-
-    results = splits.get_splits_by_record_id(split_env["record_id"])
-    assert len(results) == 2
-    assert {split.amount for split in results} == {50.0, 30.0}
-
-
-def test_get_split_by_id_returns_split(split_env):
-    created = _create_split(
-        split_env["record_id"], split_env["person_id"], split_env["account_id"]
-    )
-
-    fetched = splits.get_split_by_id(created.id)
-    assert fetched is not None
-    assert fetched.id == created.id
-
-
-def test_get_split_by_id_returns_none_for_missing(split_env):
-    assert splits.get_split_by_id(9999) is None
-
-
-def test_update_split_updates_attributes(split_env):
-    created = _create_split(
-        split_env["record_id"], split_env["person_id"], split_env["account_id"]
-    )
-
-    updated = splits.update_split(created.id, {"amount": 75.0, "isPaid": True})
-    assert updated is not None
-
-    with splits.Session() as session:
-        stored = session.get(Split, created.id)
-        assert stored.amount == 75.0
-        assert stored.isPaid is True
-
-
-def test_delete_split_removes_entry(split_env):
-    created = _create_split(
-        split_env["record_id"], split_env["person_id"], split_env["account_id"]
-    )
-
-    deleted = splits.delete_split(created.id)
-    assert deleted is not None
-    assert deleted.id == created.id
-
-    with splits.Session() as session:
-        assert session.get(Split, created.id) is None
-
-
-def test_delete_splits_by_record_id_clears_all(split_env):
-    _create_split(split_env["record_id"], split_env["person_id"], split_env["account_id"])
-    _create_split(split_env["record_id"], split_env["person_id"], split_env["account_id"])
-
-    splits.delete_splits_by_record_id(split_env["record_id"])
-
-    with splits.Session() as session:
-        remaining = (
-            session.query(Split)
-            .filter(Split.recordId == split_env["record_id"])
-            .all()
+    def test_create_split_persists_new_entry(
+        self, split_env, amount, is_paid
+    ):
+        new_split = _create_split(
+            split_env["record_id"],
+            split_env["person_id"],
+            split_env["account_id"],
+            amount=amount,
+            isPaid=is_paid,
+            paidDate=datetime.now() if is_paid else None,
         )
-        assert remaining == []
+
+        assert new_split.id is not None
+
+        with splits.Session() as session:
+            stored = session.get(Split, new_split.id)
+            assert stored is not None
+            assert stored.personId == split_env["person_id"]
+            assert stored.amount == amount
+            assert stored.isPaid == is_paid
+
+    def test_get_splits_by_record_id_returns_all_matches(self, split_env):
+        _create_split(split_env["record_id"], split_env["person_id"], split_env["account_id"])
+        _create_split(
+            split_env["record_id"],
+            split_env["person_id"],
+            split_env["account_id"],
+            amount=30.0,
+        )
+
+        results = splits.get_splits_by_record_id(split_env["record_id"])
+        assert len(results) == 2
+        assert {split.amount for split in results} == {50.0, 30.0}
+
+    def test_get_split_by_id_returns_split(self, split_env):
+        created = _create_split(
+            split_env["record_id"], split_env["person_id"], split_env["account_id"]
+        )
+
+        fetched = splits.get_split_by_id(created.id)
+        assert fetched is not None
+        assert fetched.id == created.id
+
+    def test_get_split_by_id_returns_none_for_missing(self, split_env):
+        assert splits.get_split_by_id(9999) is None
+
+    def test_update_split_updates_attributes(self, split_env, mocker):
+        created = _create_split(
+            split_env["record_id"], split_env["person_id"], split_env["account_id"]
+        )
+
+        session_spy = mocker.spy(splits, "Session")
+        updated = splits.update_split(created.id, {"amount": 75.0, "isPaid": True})
+        assert updated is not None
+        assert session_spy.call_count >= 1
+
+        with splits.Session() as session:
+            stored = session.get(Split, created.id)
+            assert stored.amount == 75.0
+            assert stored.isPaid is True
+
+    def test_update_split_returns_none_for_missing_id(self, split_env):
+        assert splits.update_split(9999, {"amount": 20.0}) is None
+
+    def test_delete_split_removes_entry(self, split_env, mocker):
+        created = _create_split(
+            split_env["record_id"], split_env["person_id"], split_env["account_id"]
+        )
+        session_spy = mocker.spy(splits, "Session")
+
+        deleted = splits.delete_split(created.id)
+        assert deleted is not None
+        assert deleted.id == created.id
+        assert session_spy.call_count >= 1
+
+        with splits.Session() as session:
+            assert session.get(Split, created.id) is None
+
+    def test_delete_split_returns_none_when_missing(self, split_env):
+        assert splits.delete_split(4242) is None
+
+    def test_delete_splits_by_record_id_clears_all(self, split_env):
+        _create_split(split_env["record_id"], split_env["person_id"], split_env["account_id"])
+        _create_split(split_env["record_id"], split_env["person_id"], split_env["account_id"])
+
+        splits.delete_splits_by_record_id(split_env["record_id"])
+
+        with splits.Session() as session:
+            remaining = (
+                session.query(Split)
+                .filter(Split.recordId == split_env["record_id"])
+                .all()
+            )
+            assert remaining == []
+
+    def test_create_split_closes_session_on_failure(self, mocker):
+        fake_session = mocker.MagicMock()
+        fake_session.commit.side_effect = RuntimeError("boom")
+        mocker.patch.object(splits, "Session", return_value=fake_session)
+
+        with pytest.raises(RuntimeError):
+            splits.create_split(
+                {
+                    "recordId": 1,
+                    "personId": 1,
+                    "accountId": 1,
+                    "amount": 10.0,
+                    "isPaid": False,
+                    "paidDate": None,
+                }
+            )
+
+        fake_session.add.assert_called_once()
+        fake_session.close.assert_called_once()
