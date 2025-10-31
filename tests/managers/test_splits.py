@@ -6,11 +6,19 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from bagels.managers import splits
+from bagels import config as bagels_config
 from bagels.models.account import Account
 from bagels.models.database.db import Base
 from bagels.models.person import Person
 from bagels.models.record import Record
 from bagels.models.split import Split
+import bagels.models.record as record_model
+import bagels.models.split as split_model
+
+if bagels_config.CONFIG is None:
+    bagels_config.CONFIG = bagels_config.Config.get_default()
+record_model.CONFIG = bagels_config.CONFIG
+split_model.CONFIG = bagels_config.CONFIG
 
 
 @pytest.fixture
@@ -131,8 +139,11 @@ class TestSplitManager:
         assert fetched is not None
         assert fetched.id == created.id
 
-    def test_get_split_by_id_returns_none_for_missing(self, split_env):
-        assert splits.get_split_by_id(9999) is None
+    @pytest.mark.parametrize("missing_id", [9999, -1, 0])
+    def test_get_split_by_id_returns_none_for_missing(
+        self, split_env, missing_id
+    ):
+        assert splits.get_split_by_id(missing_id) is None
 
     def test_update_split_updates_attributes(self, split_env, mocker):
         created = _create_split(
@@ -166,8 +177,11 @@ class TestSplitManager:
         with splits.Session() as session:
             assert session.get(Split, created.id) is None
 
-    def test_delete_split_returns_none_when_missing(self, split_env):
-        assert splits.delete_split(4242) is None
+    @pytest.mark.parametrize("missing_id", [4242, -5, 0])
+    def test_delete_split_returns_none_when_missing(
+        self, split_env, missing_id
+    ):
+        assert splits.delete_split(missing_id) is None
 
     def test_delete_splits_by_record_id_clears_all(self, split_env):
         _create_split(split_env["record_id"], split_env["person_id"], split_env["account_id"])
@@ -201,4 +215,27 @@ class TestSplitManager:
             )
 
         fake_session.add.assert_called_once()
+        fake_session.close.assert_called_once()
+
+    def test_get_split_by_id_closes_session_on_error(self, mocker):
+        fake_session = mocker.MagicMock()
+        fake_session.query.return_value.get.side_effect = RuntimeError("db down")
+        mocker.patch.object(splits, "Session", return_value=fake_session)
+
+        with pytest.raises(RuntimeError):
+            splits.get_split_by_id(101)
+
+        fake_session.close.assert_called_once()
+
+    def test_delete_splits_by_record_id_closes_session_on_error(
+        self, mocker
+    ):
+        fake_session = mocker.MagicMock()
+        fake_delete = fake_session.query.return_value.filter_by.return_value.delete
+        fake_delete.side_effect = RuntimeError("constraint failure")
+        mocker.patch.object(splits, "Session", return_value=fake_session)
+
+        with pytest.raises(RuntimeError):
+            splits.delete_splits_by_record_id(33)
+
         fake_session.close.assert_called_once()
